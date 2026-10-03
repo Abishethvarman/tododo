@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tododo</title>
+<style>
+  :root {
+    --bg:#f6f4ef; --card:#fff; --ink:#1f2328; --muted:#6b7280; --line:#e6e2d9;
+    --accent:#2f6f5e; --accent-soft:#e3f0ec; --warn:#b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181a; --card:#1f2225; --ink:#e8e6e1; --muted:#9aa0a6; --line:#2e3236; --accent:#5fb89f; --accent-soft:#1d2e29; --warn:#e0a458; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+  main { max-width:680px; margin:0 auto; padding:24px 16px 64px; }
+  header { display:flex; align-items:baseline; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  h1 { font-size:1.6rem; margin:0; }
+  .pill { font-size:.78rem; padding:3px 10px; border-radius:99px; background:var(--accent-soft); color:var(--accent); }
+  .pill.off { background:transparent; border:1px solid var(--line); color:var(--muted); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-top:16px; }
+  textarea, input[type=text], input[type=number], select {
+    width:100%; font:inherit; color:inherit; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:9px 11px;
+  }
+  textarea { resize:vertical; min-height:70px; }
+  button { font:inherit; cursor:pointer; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); padding:8px 14px; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.ghost { border:none; background:none; color:var(--muted); padding:4px 8px; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .hint { color:var(--muted); font-size:.85rem; margin:6px 0 0; }
+  label.small { font-size:.8rem; color:var(--muted); display:block; margin:12px 0 4px; }
+  .days label { display:inline-flex; gap:4px; align-items:center; margin-right:10px; font-size:.9rem; }
+  .task { border-top:1px solid var(--line); padding:12px 0; }
+  .task:first-child { border-top:none; }
+  .task-head { display:flex; gap:10px; align-items:center; }
+  .task-head input { width:20px; height:20px; accent-color:var(--accent); flex:none; }
+  .title { font-weight:600; flex:1; }
+  .done .title { text-decoration:line-through; color:var(--muted); }
+  .badge { font-size:.75rem; color:var(--accent); background:var(--accent-soft); border-radius:6px; padding:2px 8px; white-space:nowrap; }
+  .badge.due { color:var(--warn); background:transparent; border:1px solid var(--line); }
+  .subs { margin:8px 0 0 30px; }
+  .sub { display:flex; gap:8px; align-items:center; padding:3px 0; }
+  .sub input { accent-color:var(--accent); }
+  .sub.done span { text-decoration:line-through; color:var(--muted); }
+  .bar { height:5px; background:var(--line); border-radius:99px; margin:8px 0 0 30px; overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--accent); transition:width .2s; }
+  .empty { color:var(--muted); text-align:center; padding:20px 0 4px; }
+  .err { color:var(--warn); font-size:.9rem; margin-top:8px; }
+  a { color:var(--accent); }
+  input[type=checkbox] { accent-color:var(--accent); }
+  .badges { display:flex; gap:6px; flex-wrap:wrap; }
+  @media (max-width:520px) {
+    .task-head { flex-wrap:wrap; }
+    .title { flex:1 1 0; min-width:0; }
+    .badges { order:3; flex-basis:100%; margin-left:30px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Tododo</h1>
+    <span id="status" class="pill off">checking AI…</span>
+  </header>
+
+  <section class="card">
+    <label for="text" class="small" style="margin-top:0">Type a task the way you'd say it</label>
+    <textarea id="text" placeholder="Clean the apartment every Saturday: kitchen, bathroom, laundry"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button id="parseBtn" class="primary">Add task</button>
+      <span class="hint" style="margin:0">You can review and edit it before it's saved.</span>
+    </div>
+    <div id="err" class="err" hidden></div>
+  </section>
+
+  <section id="preview" class="card" hidden>
+    <div class="row" style="justify-content:space-between">
+      <strong>Review</strong>
+      <span id="source" class="pill"></span>
+    </div>
+    <label class="small" for="pTitle">Title</label>
+    <input id="pTitle" type="text">
+    <label class="small" for="pSubs">Subtasks (one per line)</label>
+    <textarea id="pSubs"></textarea>
+    <div class="row" style="margin-top:6px">
+      <button id="suggestBtn" class="ghost">✨ Suggest subtasks</button>
+    </div>
+    <label class="small" for="pFreq">Repeats</label>
+    <select id="pFreq">
+      <option value="none">Doesn't repeat</option>
+      <option value="daily">Every day</option>
+      <option value="weekly">Weekly</option>
+      <option value="monthly">Monthly</option>
+    </select>
+    <div id="weekly" class="days" style="margin-top:10px" hidden></div>
+    <div id="monthly" style="margin-top:10px" hidden>
+      <label class="small" for="pDay">Day of month</label>
+      <input id="pDay" type="number" min="1" max="31" value="1">
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="saveBtn" class="primary">Save task</button>
+      <button id="cancelBtn">Cancel</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div id="list"></div>
+  </section>
+
+  <p class="hint" style="text-align:center">
+    Everything stays on this computer. <a href="/api/export">Export as JSON</a>
+  </p>
+</main>
+
+<script>
+const DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const $ = id => document.getElementById(id);
+const api = async (path, method = "GET", body) => {
+  const r = await fetch(path, { method, headers: {"Content-Type":"application/json"}, body: body ? JSON.stringify(body) : undefined });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || "Something went wrong");
+  return data;
+};
+const el = (tag, props = {}, ...kids) => {
+  const e = Object.assign(document.createElement(tag), props);
+  kids.forEach(k => e.append(k));
+  return e;
+};
+const showErr = msg => { $("err").hidden = !msg; $("err").textContent = msg || ""; };
+
+// weekday checkboxes
+DAYS.forEach((d, i) => {
+  const cb = el("input", { type: "checkbox", value: i });
+  $("weekly").append(el("label", {}, cb, d));
+});
+$("pFreq").onchange = syncRepeatUI;
+function syncRepeatUI() {
+  $("weekly").hidden = $("pFreq").value !== "weekly";
+  $("monthly").hidden = $("pFreq").value !== "monthly";
+}
+
+function fillPreview(p) {
+  $("pTitle").value = p.title;
+  $("pSubs").value = p.subtasks.join("\n");
+  $("pFreq").value = p.repeat.freq;
+  document.querySelectorAll("#weekly input").forEach(cb => {
+    cb.checked = (p.repeat.days || []).includes(Number(cb.value));
+  });
+  $("pDay").value = p.repeat.day || 1;
+  $("source").textContent = "Read by: " + (p.source || "you");
+  syncRepeatUI();
+  $("preview").hidden = false;
+  $("preview").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function readPreview() {
+  const freq = $("pFreq").value;
+  const repeat = { freq };
+  if (freq === "weekly") repeat.days = [...document.querySelectorAll("#weekly input:checked")].map(c => Number(c.value));
+  if (freq === "monthly") repeat.day = Number($("pDay").value) || 1;
+  return {
+    title: $("pTitle").value.trim(),
+    subtasks: $("pSubs").value.split("\n").map(s => s.trim()).filter(Boolean),
+    repeat,
+  };
+}
+
+$("parseBtn").onclick = async () => {
+  showErr("");
+  const text = $("text").value.trim();
+  if (!text) return showErr("Type a task first.");
+  $("parseBtn").disabled = true;
+  $("parseBtn").textContent = "Reading…";
+  try { fillPreview(await api("/api/parse", "POST", { text })); }
+  catch (e) { showErr(e.message); }
+  $("parseBtn").disabled = false;
+  $("parseBtn").textContent = "Add task";
+};
+
+$("suggestBtn").onclick = async () => {
+  showErr("");
+  const title = $("pTitle").value.trim();
+  if (!title) return showErr("Add a title first.");
+  $("suggestBtn").disabled = true;
+  try {
+    const { subtasks } = await api("/api/suggest", "POST", { title });
+    const existing = $("pSubs").value.trim();
+    $("pSubs").value = (existing ? existing + "\n" : "") + subtasks.join("\n");
+  } catch (e) { showErr(e.message + " Start Ollama to use suggestions."); }
+  $("suggestBtn").disabled = false;
+};
+
+$("saveBtn").onclick = async () => {
+  const t = readPreview();
+  if (!t.title) return showErr("A task needs a title.");
+  await api("/api/tasks", "POST", t);
+  $("preview").hidden = true;
+  $("text").value = "";
+  showErr("");
+  load();
+};
+$("cancelBtn").onclick = () => { $("preview").hidden = true; };
+
+function dueText(due) {
+  if (!due) return "";
+  const days = Math.round((new Date(due + "T00:00") - new Date(new Date().toDateString())) / 864e5);
+  if (days <= 0) return "due today";
+  if (days === 1) return "due tomorrow";
+  return "next in " + days + " days";
+}
+
+async function load() {
+  const tasks = await api("/api/tasks");
+  const list = $("list");
+  list.replaceChildren();
+  if (!tasks.length) {
+    list.append(el("div", { className: "empty" }, "Nothing here yet. Add your first task above."));
+    return;
+  }
+  tasks.forEach(t => {
+    const head = el("div", { className: "task-head" });
+    const cb = el("input", { type: "checkbox", checked: t.done });
+    cb.onchange = async () => { await api(`/api/tasks/${t.id}/toggle`, "POST"); load(); };
+    head.append(cb, el("span", { className: "title" }, t.title));
+    const badges = el("span", { className: "badges" });
+    if (t.repeat_label) badges.append(el("span", { className: "badge" }, "↻ " + t.repeat_label));
+    if (t.due) badges.append(el("span", { className: "badge due" }, dueText(t.due)));
+    const del = el("button", { className: "ghost", title: "Delete", textContent: "✕" });
+    del.onclick = async () => { if (confirm("Delete this task?")) { await api(`/api/tasks/${t.id}`, "DELETE"); load(); } };
+    if (badges.childElementCount) head.append(badges);
+    head.append(del);
+
+    const box = el("div", { className: "task" + (t.done ? " done" : "") }, head);
+    if (t.subtasks.length) {
+      const subs = el("div", { className: "subs" });
+      t.subtasks.forEach(s => {
+        const c = el("input", { type: "checkbox", checked: s.done });
+        c.onchange = async () => { await api(`/api/subtasks/${s.id}/toggle`, "POST"); load(); };
+        subs.append(el("label", { className: "sub" + (s.done ? " done" : "") }, c, el("span", {}, s.title)));
+      });
+      const done = t.subtasks.filter(s => s.done).length;
+      const bar = el("div", { className: "bar" }, el("i", { style: `width:${(done / t.subtasks.length) * 100}%` }));
+      box.append(subs, bar);
+    }
+    list.append(box);
+  });
+}
+
+(async () => {
+  try {
+    const s = await api("/api/status");
+    const ok = s.ollama && s.model_installed;
+    $("status").textContent = ok ? `AI: ${s.model} · local` : "Offline mode · rule-based";
+    $("status").className = "pill" + (ok ? "" : " off");
+  } catch { $("status").textContent = "Offline mode"; }
+  load();
+})();
+</script>
+</body>
+</html>
