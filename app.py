@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sqlite3
+import urllib.error
 import urllib.request
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,7 +12,7 @@ from pathlib import Path
 BASE = Path(__file__).parent
 DB_PATH = os.environ.get("TODO_DB", str(BASE / "todo.db"))
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-MODEL = os.environ.get("OLLAMA_MODEL", "gemma2")
+MODEL = os.environ.get("OLLAMA_MODEL", "gemma2:latest")
 PORT = int(os.environ.get("PORT", "8000"))
 
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -58,8 +59,12 @@ def normalize_repeat(r):
         for d in r.get("days") or []:
             if isinstance(d, int) and 0 <= d <= 6:
                 days.append(d)
-            elif isinstance(d, str) and d.strip().lower() in DAYS:
-                days.append(DAYS.index(d.strip().lower()))
+            elif isinstance(d, str):
+                # accept "Monday", "mon", "Mondays", "thurs", ...
+                key = d.strip().lower()[:3]
+                for i, name in enumerate(DAYS):
+                    if name.startswith(key) and len(key) == 3:
+                        days.append(i)
         days = sorted(set(days)) or [date.today().weekday()]
         return {"freq": "weekly", "days": days}
     if freq == "monthly":
@@ -180,15 +185,36 @@ def fallback_parse(text):
     }
 
 
+def installed_models():
+    with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=2) as r:
+        return [m["name"] for m in json.loads(r.read()).get("models", [])]
+
+
+def resolve_model():
+    """Use the exact tag that is installed: OLLAMA_MODEL=gemma2 should still
+    work when only gemma2:2b was pulled (Ollama would look for gemma2:latest)."""
+    try:
+        names = installed_models()
+    except Exception:
+        return MODEL
+    if MODEL in names or f"{MODEL}:latest" in names:
+        return MODEL
+    same_family = [n for n in names if n.split(":")[0] == MODEL.split(":")[0]]
+    return same_family[0] if same_family else MODEL
+
+
 def ollama_json(prompt):
     body = json.dumps(
-        {"model": MODEL, "prompt": prompt, "stream": False, "format": "json"}
+        {"model": resolve_model(), "prompt": prompt, "stream": False, "format": "json"}
     ).encode()
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/generate", body, {"Content-Type": "application/json"}
     )
-    with urllib.request.urlopen(req, timeout=90) as resp:
-        return json.loads(json.loads(resp.read())["response"])
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            return json.loads(json.loads(resp.read())["response"])
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Ollama said {e.code}: {e.read().decode(errors='ignore')[:200]}")
 
 
 PARSE_PROMPT = """Turn the user's to-do sentence into JSON with exactly these keys:
@@ -202,20 +228,45 @@ Only use information in the sentence. Do not invent subtasks.
 Sentence: {text}"""
 
 
+def clean_list(value):
+    """Turn whatever the model gave for a list (None, a string, a list of
+    strings or of objects) into a clean list of strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = re.split(r",|;|\n", value)
+    if isinstance(value, dict):
+        value = list(value.values())
+    out = []
+    for item in value if isinstance(value, list) else [value]:
+        if isinstance(item, dict):
+            item = item.get("title") or item.get("name") or item.get("task") or ""
+        item = str(item).strip(" -•*\t")
+        if item and item.lower() not in ("none", "null", "n/a"):
+            out.append(item)
+    return out
+
+
 def parse_text(text):
     try:
         data = ollama_json(PARSE_PROMPT.format(text=text))
-        title = str(data["title"]).strip()
-        subs = [str(s).strip() for s in data.get("subtasks", []) if str(s).strip()]
+        if not isinstance(data, dict):
+            raise ValueError(f"expected a JSON object, got {type(data).__name__}")
+        lower = {str(k).lower(): v for k, v in data.items()}
+        title = str(lower.get("title") or lower.get("task") or lower.get("name") or "").strip()
         if not title:
-            raise ValueError("empty title")
+            raise ValueError(f"no title in model reply: {data}")
+        repeat = lower.get("repeat") or lower.get("recurrence")
+        if isinstance(repeat, str):
+            repeat = {"freq": repeat}
         return {
             "title": title,
-            "subtasks": subs,
-            "repeat": normalize_repeat(data.get("repeat")),
-            "source": f"{MODEL} (local)",
+            "subtasks": clean_list(lower.get("subtasks")),
+            "repeat": normalize_repeat(repeat),
+            "source": f"{resolve_model()} (local)",
         }
-    except Exception:
+    except Exception as e:
+        print(f"[gemma] fell back to offline rules: {type(e).__name__}: {e}")
         out = fallback_parse(text)
         out["source"] = "offline rules"
         return out
@@ -226,7 +277,11 @@ def suggest_subtasks(title):
         'Give 3 to 6 short, concrete subtasks for this task. '
         'Reply as JSON: {"subtasks": ["..."]}. Task: ' + title
     )
-    return [str(s).strip() for s in data.get("subtasks", []) if str(s).strip()][:8]
+    if isinstance(data, list):
+        return clean_list(data)[:8]
+    lower = {str(k).lower(): v for k, v in data.items()}
+    subs = lower.get("subtasks") or lower.get("steps") or next(iter(lower.values()), [])
+    return clean_list(subs)[:8]
 
 
 def ollama_status():
@@ -304,7 +359,6 @@ def toggle_task(conn, tid):
     conn.commit()
 
 
-# ------------------------------------------------------------------ http
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
